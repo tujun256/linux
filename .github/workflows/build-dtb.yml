@@ -1,115 +1,104 @@
-name: build DTB
+name: build dtb
 
-# 触发条件：手动触发（避免自动触发冗余编译）+ DTS文件修改时自动触发
 on:
-  workflow_dispatch:  # 手动触发（推荐优先使用）
+  workflow_dispatch:  # 手动触发
   push:
-    branches: [ master ]  # 你的linux仓库主分支（若用main需修改）
+    branches: [ master ]
     paths:
-      - 'arch/arm64/boot/dts/rockchip/rk3588-HL-ZF9000.dts'  # 仅当目标DTS修改时触发
+      - 'arch/arm64/boot/dts/rockchip/rk3588-HL-ZF9000.dts'  # 匹配无连字符的DTS名
 
 jobs:
   build-specific-dtb:
     runs-on: ubuntu-latest
     steps:
       ########################################################################
-      # 步骤1：直接检出你的 linux 仓库（已包含目标DTS）
+      # 步骤1：检出 tujun256/linux 仓库（已包含目标DTS）
       ########################################################################
       - name: 检出 tujun256/linux 仓库
         uses: actions/checkout@v4
         with:
-          repository: tujun256/linux  # 你的linux仓库地址（无需Fork上游，直接用你的仓库）
-          path: linux  # 检出到当前工作目录的 linux 文件夹
-          fetch-depth: 1  # 仅拉取最新提交，加速流程
-          token: ${{ secrets.GITHUB_TOKEN }}  # 自动授权，无需额外配置
+          repository: tujun256/linux
+          path: linux
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       ########################################################################
-      # 步骤2：安装编译依赖（arm64交叉工具链、DT编译工具等）
+      # 步骤2：安装编译依赖
       ########################################################################
       - name: 安装编译依赖
         run: |
           sudo apt-get update -y
-          # 核心：安装arm64交叉编译工具链
-          sudo apt-get install -y gcc-aarch64-linux-gnu 
-          # 安装Device Tree Compiler、Make等辅助工具
+          sudo apt-get install -y gcc-aarch64-linux-gnu  # arm64交叉工具链
           sudo apt-get install -y device-tree-compiler make bc flex bison libssl-dev
 
       ########################################################################
-      # 步骤3：配置 Rockchip Makefile，确保目标DTB被编译（关键步骤）
+      # 步骤3：修复sed语法，添加DTB编译规则（核心修正）
       ########################################################################
       - name: 验证/添加 rk3588-HL-ZF9000.dtb 编译规则
         run: |
-          # 定义目标文件名（确保与你的DTS完全一致，包括大小写和连字符）
           DTS_FILE="rk3588-HL-ZF9000.dts"
-          DTB_FILE="${DTS_FILE%.dts}.dtb"  # 自动生成DTB文件名：rk3588-HL-ZF9000.dtb
+          DTB_FILE="${DTS_FILE%.dts}.dtb"
           MAKEFILE_PATH="./linux/arch/arm64/boot/dts/rockchip/Makefile"
+          SEARCH_PATTERN="dtb-\$\(CONFIG_ARCH_ROCKCHIP\) += rk3588"  # 转义$和()
+          INSERT_LINE="dtb-\$(CONFIG_ARCH_ROCKCHIP) += $DTB_FILE"
 
-          # 检查Makefile中是否已存在该DTB的编译规则
-          if ! grep -q "^dtb-\$(CONFIG_ARCH_ROCKCHIP) += $DTB_FILE" "$MAKEFILE_PATH"; then
-            # 若不存在，在合适位置添加编译规则（紧跟其他rk3588系列DTB规则）
-            sed -i "/dtb-\$(CONFIG_ARCH_ROCKCHIP) += rk3588/dtb-\$(CONFIG_ARCH_ROCKCHIP) += $DTB_FILE\n&" "$MAKEFILE_PATH"
-            echo "✅ 已在Makefile中添加编译规则：$DTB_FILE"
+          # 检查并添加规则
+          if ! grep -q "^${INSERT_LINE}$" "$MAKEFILE_PATH"; then
+            echo "ℹ️ 正在添加 $DTB_FILE 规则..."
+            sed -i "/${SEARCH_PATTERN}/i ${INSERT_LINE}" "$MAKEFILE_PATH"  # 修正sed语法
+            # 二次验证
+            if ! grep -q "^${INSERT_LINE}$" "$MAKEFILE_PATH"; then
+              echo "❌ 规则添加失败"
+              exit 1
+            fi
+            echo "✅ 规则添加成功：${INSERT_LINE}"
           else
-            echo "ℹ️ Makefile中已存在 $DTB_FILE 的编译规则，无需重复添加"
-          fi
-
-          # 验证规则是否添加成功
-          if grep -q "$DTB_FILE" "$MAKEFILE_PATH"; then
-            echo "✅ 验证通过：Makefile已包含 $DTB_FILE"
-          else
-            echo "❌ 错误：Makefile未添加 $DTB_FILE 规则"
-            exit 1
+            echo "ℹ️ 规则已存在，无需添加"
           fi
 
       ########################################################################
-      # 步骤4：配置Linux内核（启用Rockchip架构支持，确保DTB能编译）
+      # 步骤4：配置内核（启用Rockchip架构）
       ########################################################################
-      - name: 配置内核（启用Rockchip架构+默认配置）
+      - name: 配置内核
         run: |
-          cd ./linux  # 进入linux仓库根目录
-          # 生成arm64默认配置（defconfig已包含Rockchip架构支持）
+          cd ./linux
           make ARCH=arm64 defconfig -j$(nproc)
-          
-          # 强制确保Rockchip架构启用（兜底逻辑，避免配置缺失）
+          # 兜底：确保Rockchip架构启用
           if ! grep -q "CONFIG_ARCH_ROCKCHIP=y" .config; then
             echo "CONFIG_ARCH_ROCKCHIP=y" >> .config
-            echo "✅ 手动启用Rockchip架构支持"
+            echo "✅ 手动启用Rockchip架构"
           else
-            echo "✅ Rockchip架构支持已默认启用"
+            echo "✅ Rockchip架构已启用"
           fi
 
       ########################################################################
-      # 步骤5：编译目标DTB（仅编译rockchip相关DTB，加速流程）
+      # 步骤5：编译DTB
       ########################################################################
       - name: 编译 rk3588-HL-ZF9000.dtb
         run: |
-          cd ./linux  # 进入linux仓库根目录
-          # 定义目标文件路径（避免拼写错误）
-          DTS_FILE="rk3588-HL-ZF9000.dts"
-          DTB_FILE="${DTS_FILE%.dts}.dtb"
-          DTB_OUTPUT_PATH="arch/arm64/boot/dts/rockchip/$DTB_FILE"
+          cd ./linux
+          DTB_FILE="rk3588-HL-ZF9000.dtb"
+          DTB_PATH="arch/arm64/boot/dts/rockchip/$DTB_FILE"
 
-          # 编译DTB（指定arm64架构+交叉编译器，仅编译设备树）
-          echo "🚀 开始编译 $DTB_FILE..."
+          # 编译DTB（仅设备树，加速）
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- dtbs -j$(nproc)
-          
-          # 验证DTB是否成功生成
-          if [ -f "$DTB_OUTPUT_PATH" ]; then
-            echo "✅ 编译成功！DTB文件路径：$DTB_OUTPUT_PATH"
-            # 显示文件信息（大小、修改时间），确认完整性
-            ls -lh "$DTB_OUTPUT_PATH"
+
+          # 验证编译结果
+          if [ -f "$DTB_PATH" ]; then
+            echo "✅ 编译成功！文件路径：$DTB_PATH"
+            ls -lh "$DTB_PATH"  # 显示文件信息
           else
-            echo "❌ 编译失败！未找到 $DTB_OUTPUT_PATH"
+            echo "❌ 编译失败，未找到 $DTB_PATH"
             exit 1
           fi
 
       ########################################################################
-      # 步骤6：上传编译好的DTB产物（方便下载使用）
+      # 步骤6：上传产物
       ########################################################################
-      - name: 上传 rk3588-HL-ZF9000.dtb 产物
+      - name: 上传 DTB 产物
         uses: actions/upload-artifact@v4
         with:
-          name: rk3588-HL-ZF9000-dtb  # 下载时显示的产物名称（清晰识别）
-          path: ./linux/arch/arm64/boot/dts/rockchip/rk3588-HL-ZF9000.dtb  # 准确的DTB路径
-          retention-days: 90  # 产物保留90天（可按需调整）
-          if-no-files-found: error  # 若未找到文件，标记流程失败
+          name: rk3588-HL-ZF9000-dtb
+          path: ./linux/arch/arm64/boot/dts/rockchip/rk3588-HL-ZF9000.dtb
+          retention-days: 90
+          if-no-files-found: error
