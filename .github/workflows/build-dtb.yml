@@ -5,14 +5,14 @@ on:
   push:
     branches: [ master ]
     paths:
-      - 'arch/arm64/boot/dts/rockchip/rk3588-HL-ZF9000.dts'  # 匹配无连字符的DTS名
+      - 'arch/arm64/boot/dts/rockchip/rk3588-HL-ZF9000.dts'  # 匹配DTS文件
 
 jobs:
   build-specific-dtb:
     runs-on: ubuntu-latest
     steps:
       ########################################################################
-      # 步骤1：检出 tujun256/linux 仓库（已包含目标DTS）
+      # 步骤1：检出 tujun256/linux 仓库
       ########################################################################
       - name: 检出 tujun256/linux 仓库
         uses: actions/checkout@v4
@@ -32,38 +32,48 @@ jobs:
           sudo apt-get install -y device-tree-compiler make bc flex bison libssl-dev
 
       ########################################################################
-      # 步骤3：修复sed语法，添加DTB编译规则（核心修正）
+      # 步骤3：修复添加DTB编译规则的方法（已修正）
       ########################################################################
       - name: 验证/添加 rk3588-HL-ZF9000.dtb 编译规则
         run: |
           DTS_FILE="rk3588-HL-ZF9000.dts"
           DTB_FILE="${DTS_FILE%.dts}.dtb"
           MAKEFILE_PATH="./linux/arch/arm64/boot/dts/rockchip/Makefile"
-          SEARCH_PATTERN="dtb-\$\(CONFIG_ARCH_ROCKCHIP\) += rk3588"  # 转义$和()
           INSERT_LINE="dtb-\$(CONFIG_ARCH_ROCKCHIP) += $DTB_FILE"
 
-          # 检查并添加规则
+          # 增加调试信息，显示Makefile中已有的相关规则
+          echo "📋 当前Makefile中的Rockchip DTB规则："
+          grep "dtb-\$(CONFIG_ARCH_ROCKCHIP) += " "$MAKEFILE_PATH" || true
+
+          # 检查规则是否已存在
           if ! grep -q "^${INSERT_LINE}$" "$MAKEFILE_PATH"; then
             echo "ℹ️ 正在添加 $DTB_FILE 规则..."
-            sed -i "/${SEARCH_PATTERN}/i ${INSERT_LINE}" "$MAKEFILE_PATH"  # 修正sed语法
+            
+            # 改进：先尝试在类似行前插入，如失败则在文件末尾添加
+            if ! sed -i "/^dtb-\$(CONFIG_ARCH_ROCKCHIP) += /i ${INSERT_LINE}" "$MAKEFILE_PATH"; then
+              echo "⚠️ 无法在现有规则前插入，尝试添加到文件末尾"
+              echo "${INSERT_LINE}" >> "$MAKEFILE_PATH"
+            fi
+            
             # 二次验证
-            if ! grep -q "^${INSERT_LINE}$" "$MAKEFILE_PATH"; then
+            if grep -q "^${INSERT_LINE}$" "$MAKEFILE_PATH"; then
+              echo "✅ 规则添加成功：${INSERT_LINE}"
+            else
               echo "❌ 规则添加失败"
               exit 1
             fi
-            echo "✅ 规则添加成功：${INSERT_LINE}"
           else
             echo "ℹ️ 规则已存在，无需添加"
           fi
 
       ########################################################################
-      # 步骤4：配置内核（启用Rockchip架构）
+      # 步骤4：配置内核
       ########################################################################
       - name: 配置内核
         run: |
           cd ./linux
           make ARCH=arm64 defconfig -j$(nproc)
-          # 兜底：确保Rockchip架构启用
+          # 确保Rockchip架构启用
           if ! grep -q "CONFIG_ARCH_ROCKCHIP=y" .config; then
             echo "CONFIG_ARCH_ROCKCHIP=y" >> .config
             echo "✅ 手动启用Rockchip架构"
@@ -80,13 +90,13 @@ jobs:
           DTB_FILE="rk3588-HL-ZF9000.dtb"
           DTB_PATH="arch/arm64/boot/dts/rockchip/$DTB_FILE"
 
-          # 编译DTB（仅设备树，加速）
+          # 编译DTB
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- dtbs -j$(nproc)
 
           # 验证编译结果
           if [ -f "$DTB_PATH" ]; then
             echo "✅ 编译成功！文件路径：$DTB_PATH"
-            ls -lh "$DTB_PATH"  # 显示文件信息
+            ls -lh "$DTB_PATH"
           else
             echo "❌ 编译失败，未找到 $DTB_PATH"
             exit 1
