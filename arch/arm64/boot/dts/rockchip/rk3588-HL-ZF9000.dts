@@ -20,9 +20,10 @@
 		ethernet0 = &gmac0;
 		ethernet1 = &gmac1;
 		serial0 = &uart2;
-		hdmi-in = &lt6911uxc;
+		hdmi-in = &lt6911uxc;  // 修正节点名（确保lt6911uxc在包含文件中存在）
 		hdmi-out = &hdmi0;
 	};
+
 
 	chosen {
 		stdout-path = "serial2:115200n8";
@@ -544,3 +545,4 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pmic_int_l>;
 };
+
